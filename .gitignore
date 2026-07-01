@@ -1,12 +1,46 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 
+# Virtual environments
 .venv/
-.idea/
+venv/
+venv_*/
 
-outputs/
-runs/
+# IDEs
+.idea/
+.vscode/
+
+# Model weights and exported formats
 *.pt
 *.pth
 *.onnx
+*.engine
+*.mlmodel
+
+# Training / inference outputs
+outputs/
+runs/
+
+# Datasets and images (no need to commit raw data)
+data/
+data_occlusion/
+data_occlusion_balanced/
+test/
+
+# Common image formats
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.gif
+*.tiff
+*.tif
+
+# Temporary / session files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

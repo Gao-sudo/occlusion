@@ -98,16 +98,23 @@ def draw_cluster_info(
 
     for cidx, (cluster, result) in enumerate(zip(clusters, results)):
         color = colors[cidx]
+        is_uncountable = cluster.countability == "uncountable"
+        if is_uncountable:
+            color = (0, 0, 220)  # red for uncountable
+
         cx, cy = cluster.center
         cx, cy = int(cx), int(cy)
 
+        tag = "[U]" if is_uncountable else "[C]"
         label = (
-            f"C{cidx} {result.class_name}: "
+            f"{tag} C{cidx} {result.class_name}: "
             f"vis={result.visible_count} est={result.estimated_total} "
             f"({result.confidence})"
         )
         if result.occlusion_inferred > 0:
             label += f" +{result.occlusion_inferred} occluded"
+        if is_uncountable and result.learned_unit_depth_m is not None:
+            label += f" unit={result.learned_unit_depth_m:.3f}m"
 
         label_y = max(0, cy - int(round(font_scale * 36)))
         vis = _draw_text_label(vis, label, (cx, label_y), color, font_scale)

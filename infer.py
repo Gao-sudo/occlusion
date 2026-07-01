@@ -33,17 +33,8 @@ from occlusion.config import (
     PROJECT_ROOT,
 )
 from occlusion.depth_estimator import DepthEstimator
-from occlusion.fusion_counter import count_all_clusters, summarize_counts
-from occlusion.label_convert import build_detection_polygon, polygon_to_points_list
-from occlusion.mask_analyzer import cluster_masks, extract_mask_infos, filter_top_horizontal_display_masks
-from occlusion.utils import (
-    ensure_dir,
-    load_class_names,
-    load_image,
-    save_image,
-    save_json,
-)
-from occlusion.visualizer import compose_result_image
+from occlusion.pipeline import process_image
+from occlusion.utils import ensure_dir, load_class_names, save_image, save_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,27 +82,6 @@ def _list_images(source: Path) -> list[Path]:
     return sorted(files)
 
 
-def _serialize_instance(mask_info: Any, masks_np: np.ndarray, image_shape: tuple[int, int]) -> dict[str, Any]:
-    source_index = mask_info.source_index
-    mask = masks_np[source_index] if source_index < len(masks_np) else None
-    polygon, polygon_source = build_detection_polygon(
-        mask=mask,
-        bbox_xyxy=(mask_info.x1, mask_info.y1, mask_info.x2, mask_info.y2),
-        image_shape=image_shape,
-    )
-    return {
-        "class_id": mask_info.class_id,
-        "class_name": mask_info.class_name,
-        "confidence": mask_info.confidence,
-        "bbox": [mask_info.x1, mask_info.y1, mask_info.x2, mask_info.y2],
-        "polygon": polygon_to_points_list(polygon),
-        "polygon_source": polygon_source,
-        "area_px": mask_info.area_px,
-        "centroid": [mask_info.cx, mask_info.cy],
-        "orientation_deg": mask_info.orientation_deg,
-    }
-
-
 def run_single_image(
     image_path: Path,
     seg_model: YOLO,
@@ -124,71 +94,23 @@ def run_single_image(
     device: str,
 ) -> dict[str, Any]:
     """Run occlusion counting on a single image."""
-    image_bgr = load_image(image_path)
+    image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        raise RuntimeError(f"Failed to load image: {image_path}")
 
-    # --- Segmentation ---
-    results = seg_model.predict(
-        source=image_bgr,
+    out = process_image(
+        image_bgr=image_bgr,
+        seg_model=seg_model,
+        depth_estimator=depth_estimator,
+        class_names=class_names,
         imgsz=imgsz,
         conf=conf,
         iou=iou,
-        device=device,
         max_det=max_det,
-        verbose=False,
+        device=str(device),
     )
-    result = results[0]
-
-    masks_np = result.masks.data.cpu().numpy() if result.masks is not None else np.array([])
-    if masks_np.ndim == 3:
-        # Ultralytics may return masks in original image resolution or model resolution
-        # Ensure binary masks resized to original image size
-        h, w = image_bgr.shape[:2]
-        resized_masks = []
-        for m in masks_np:
-            rm = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
-            resized_masks.append(rm > 0)
-        masks_np = np.stack(resized_masks) if resized_masks else np.array([])
-
-    class_ids = result.boxes.cls.cpu().numpy() if result.boxes is not None and result.boxes.cls is not None else np.array([])
-    confidences = result.boxes.conf.cpu().numpy() if result.boxes is not None and result.boxes.conf is not None else None
-
-    image_shape = image_bgr.shape[:2]
-    mask_infos = extract_mask_infos(masks_np, class_ids, class_names, confidences)
-    mask_infos, filtered_mask_infos = filter_top_horizontal_display_masks(mask_infos, image_shape)
-    instances = [_serialize_instance(mask_info, masks_np, image_shape) for mask_info in mask_infos]
-    filtered_instances = [
-        {
-            **_serialize_instance(mask_info, masks_np, image_shape),
-            "filter_reason": "top_horizontal_display_sign",
-        }
-        for mask_info in filtered_mask_infos
-    ]
-    clusters = cluster_masks(mask_infos)
-
-    # --- Depth estimation ---
-    depth_map = None
-    if depth_estimator is not None:
-        depth_map = depth_estimator.infer(image_bgr)
-    else:
-        # Create a dummy depth map for mask-only mode
-        depth_map = np.zeros(image_bgr.shape[:2], dtype=np.float32)
-
-    # --- Fusion counting ---
-    count_results = count_all_clusters(clusters, depth_map)
-    summary = summarize_counts(count_results)
-    summary["image"] = str(image_path)
-
-    # --- Visualization ---
-    vis_image = compose_result_image(image_bgr, depth_map, clusters, count_results)
-
-    return {
-        "summary": summary,
-        "instances": instances,
-        "filtered_instances": filtered_instances,
-        "vis_image": vis_image,
-        "clusters": clusters,
-        "count_results": count_results,
-    }
+    out["summary"]["image"] = str(image_path)
+    return out
 
 
 def main() -> None:
@@ -208,7 +130,6 @@ def main() -> None:
     # Load segmentation model
     weights_path = args.weights
     if weights_path is None:
-        # Try to find latest trained seg weight or fallback to pretrained
         candidates = sorted((PROJECT_ROOT / "outputs" / "occlusion").rglob("best.pt")) if (PROJECT_ROOT / "outputs" / "occlusion").exists() else []
         if candidates:
             weights_path = str(candidates[-1])
@@ -257,9 +178,7 @@ def main() -> None:
 
     # Save aggregated results
     save_json(meta_dir / "results.json", all_summaries)
-    print(f"[Done] Results saved to {out_dir}")
-    print(f"       Visualizations: {vis_dir}")
-    print(f"       JSON meta: {meta_dir / 'results.json'}")
+    print(f"[Done] Results saved to {meta_dir / 'results.json'}")
 
 
 if __name__ == "__main__":
