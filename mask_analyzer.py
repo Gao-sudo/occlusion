@@ -5,13 +5,22 @@ of masks along their principal axis.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 import cv2
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-from occlusion.config import CLUSTER_EPS_PX, CLUSTER_MIN_SAMPLES
+from occlusion.config import (
+    CLUSTER_EPS_PX,
+    CLUSTER_MIN_SAMPLES,
+    UNCOUNTABLE_DENSITY_MASKS_PER_M,
+    UNCOUNTABLE_MASK_IOU_THRESHOLD,
+    UNCOUNTABLE_MIN_CONFIDENCE_RATIO,
+    UNCOUNTABLE_MIN_VISIBLE_FOR_REFERENCE,
+    UNCOUNTABLE_STEP_RATIO_THRESHOLD,
+)
 
 
 @dataclass
@@ -34,6 +43,9 @@ class MaskInfo:
     area_px: int
     # principal orientation angle in degrees
     orientation_deg: float
+    # context-aware decision
+    decision: str = "unknown"
+    decision_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -45,6 +57,15 @@ class ClusterInfo:
     axis_direction: tuple[float, float]
     # approximate center of the cluster
     center: tuple[float, float]
+    # countable: instance masks are well separated, use visible count directly
+    # uncountable: severe overlap or dense packing, estimate via depth density
+    countability: Literal["countable", "uncountable"] = "countable"
+    countability_reasons: list[str] = field(default_factory=list)
+    # dominant SKU class in this cluster (used for occlusion inheritance)
+    dominant_class_id: int | None = None
+    dominant_class_name: str | None = None
+    # source indices of masks with high confidence (helper for decision engine)
+    high_conf_source_indices: set[int] = field(default_factory=set)
 
 
 def extract_mask_infos(
@@ -202,6 +223,61 @@ def cluster_masks(
     return clusters
 
 
+def resolve_cluster_dominant_sku(cluster: ClusterInfo) -> ClusterInfo:
+    """Pick the SKU class of the highest-confidence mask as the cluster dominant SKU.
+
+    This is used to assign SKU to occluded/low-confidence instances in the same
+    hook/stack by context inheritance.
+    """
+    if not cluster.masks:
+        cluster.dominant_class_id = None
+        cluster.dominant_class_name = None
+        return cluster
+    best = max(cluster.masks, key=lambda m: m.confidence)
+    cluster.dominant_class_id = best.class_id
+    cluster.dominant_class_name = best.class_name
+    cluster.high_conf_source_indices = {
+        m.source_index for m in cluster.masks
+        if m.confidence >= 0.80
+    }
+    return cluster
+
+
+def is_mask_axis_aligned(
+    mask_info: MaskInfo,
+    cluster: ClusterInfo,
+    tolerance_deg: float = 30.0,
+) -> bool:
+    """Check whether a mask centroid lies close to the cluster's principal axis."""
+    ax, ay = cluster.axis_direction
+    if abs(ax) < 1e-6 and abs(ay) < 1e-6:
+        return False
+
+    cx, cy = cluster.center
+    dx = mask_info.cx - cx
+    dy = mask_info.cy - cy
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return True
+
+    # Angle between vector from cluster center to mask centroid and cluster axis
+    dot = dx * ax + dy * ay
+    norm = np.hypot(dx, dy)
+    if norm <= 0:
+        return True
+    cos_angle = np.clip(dot / norm, -1.0, 1.0)
+    angle_deg = np.degrees(np.arccos(cos_angle))
+    return angle_deg <= tolerance_deg
+
+
+def build_cluster_by_source_index(clusters: list[ClusterInfo]) -> dict[int, ClusterInfo]:
+    """Map each mask source_index to its containing cluster."""
+    mapping: dict[int, ClusterInfo] = {}
+    for cluster in clusters:
+        for mask_info in cluster.masks:
+            mapping[mask_info.source_index] = cluster
+    return mapping
+
+
 def project_depth_along_axis(
     depth_map: np.ndarray,
     cluster: ClusterInfo,
@@ -291,3 +367,108 @@ def detect_depth_steps(
             result.append((float(positions[s]), float(positions[e])))
 
     return result
+
+
+
+def mask_iou(m1: np.ndarray, m2: np.ndarray) -> float:
+    """Compute IoU between two binary masks."""
+    intersection = float(np.logical_and(m1, m2).sum())
+    union = float(np.logical_or(m1, m2).sum())
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def max_intra_cluster_mask_iou(masks: list[MaskInfo]) -> float:
+    """Return the maximum pairwise IoU among masks in a cluster."""
+    n = len(masks)
+    if n < 2:
+        return 0.0
+    max_iou = 0.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            max_iou = max(max_iou, mask_iou(masks[i].mask, masks[j].mask))
+    return max_iou
+
+
+def classify_cluster_countability(
+    cluster: ClusterInfo,
+    depth_map: np.ndarray,
+    mask_iou_threshold: float = UNCOUNTABLE_MASK_IOU_THRESHOLD,
+    step_ratio_threshold: float = UNCOUNTABLE_STEP_RATIO_THRESHOLD,
+    density_masks_per_m: float = UNCOUNTABLE_DENSITY_MASKS_PER_M,
+    min_confidence_ratio: float = UNCOUNTABLE_MIN_CONFIDENCE_RATIO,
+    min_visible_for_reference: int = UNCOUNTABLE_MIN_VISIBLE_FOR_REFERENCE,
+) -> ClusterInfo:
+    """Classify a cluster as countable or uncountable based on geometry and depth.
+
+    Rules (any match -> uncountable):
+        1. Masks inside the cluster overlap too much (severe occlusion).
+        2. Number of depth steps greatly exceeds visible count (stacked behind each other).
+        3. Masks are extremely dense along the depth axis.
+        4. Too many low-confidence detections in the cluster.
+    """
+    visible_count = len(cluster.masks)
+    reasons: list[str] = []
+
+    if visible_count < min_visible_for_reference:
+        # Single isolated masks are countable by default
+        cluster.countability = "countable"
+        cluster.countability_reasons = []
+        return cluster
+
+    # Rule 1: mask overlap
+    max_iou = max_intra_cluster_mask_iou(cluster.masks)
+    if max_iou > mask_iou_threshold:
+        reasons.append(f"high_mask_overlap_iou_{max_iou:.2f}")
+
+    # Rule 2 & 3 need depth projection
+    positions, depths = project_depth_along_axis(depth_map, cluster)
+    if len(depths) > 0:
+        depth_range = float(depths.max() - depths.min())
+        steps = detect_depth_steps(positions, depths, step_threshold_m=0.015)
+        step_count = len(steps)
+
+        if visible_count > 0 and step_count / visible_count > step_ratio_threshold:
+            reasons.append(f"steps_exceed_visible_{step_count}/{visible_count}")
+
+        if depth_range > 0 and visible_count / depth_range > density_masks_per_m:
+            reasons.append(f"high_density_{visible_count / depth_range:.1f}_masks_per_m")
+
+    # Rule 4: low confidence ratio
+    low_conf_count = sum(1 for m in cluster.masks if m.confidence < 0.5)
+    if visible_count > 0 and low_conf_count / visible_count > (1.0 - min_confidence_ratio):
+        reasons.append(f"low_confidence_ratio_{low_conf_count}/{visible_count}")
+
+    if reasons:
+        cluster.countability = "uncountable"
+        cluster.countability_reasons = reasons
+    else:
+        cluster.countability = "countable"
+        cluster.countability_reasons = []
+
+    return cluster
+
+
+def classify_clusters_countability(
+    clusters: list[ClusterInfo],
+    depth_map: np.ndarray,
+    mask_iou_threshold: float = UNCOUNTABLE_MASK_IOU_THRESHOLD,
+    step_ratio_threshold: float = UNCOUNTABLE_STEP_RATIO_THRESHOLD,
+    density_masks_per_m: float = UNCOUNTABLE_DENSITY_MASKS_PER_M,
+    min_confidence_ratio: float = UNCOUNTABLE_MIN_CONFIDENCE_RATIO,
+    min_visible_for_reference: int = UNCOUNTABLE_MIN_VISIBLE_FOR_REFERENCE,
+) -> list[ClusterInfo]:
+    """Classify countability for all clusters."""
+    return [
+        classify_cluster_countability(
+            c,
+            depth_map,
+            mask_iou_threshold=mask_iou_threshold,
+            step_ratio_threshold=step_ratio_threshold,
+            density_masks_per_m=density_masks_per_m,
+            min_confidence_ratio=min_confidence_ratio,
+            min_visible_for_reference=min_visible_for_reference,
+        )
+        for c in clusters
+    ]

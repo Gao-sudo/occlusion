@@ -12,6 +12,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import base64
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +26,7 @@ from ultralytics import YOLO
 
 from occlusion.config import (
     DEFAULT_CONF,
+    DEFAULT_DATA_YAML,
     DEFAULT_DEVICE,
     DEFAULT_IMGSZ,
     DEFAULT_IOU,
@@ -33,13 +35,10 @@ from occlusion.config import (
     PROJECT_ROOT,
 )
 from occlusion.depth_estimator import DepthEstimator
-from occlusion.fusion_counter import count_all_clusters, summarize_counts
-from occlusion.label_convert import build_detection_polygon, polygon_to_points_list
-from occlusion.mask_analyzer import cluster_masks, extract_mask_infos, filter_top_horizontal_display_masks
+from occlusion.pipeline import process_image
 from occlusion.utils import load_class_names
-from occlusion.visualizer import compose_result_image
 
-app = FastAPI(title="Jomoo Occlusion Counting API", version="1.0.0")
+app = FastAPI(title="Jomoo Occlusion Counting API", version="1.1.0")
 
 
 class OcclusionSettings:
@@ -50,6 +49,7 @@ class OcclusionSettings:
         self.iou = float(os.environ.get("OCCLUSION_IOU", str(DEFAULT_IOU)))
         self.max_det = int(os.environ.get("OCCLUSION_MAX_DET", str(DEFAULT_MAX_DET)))
         self.weights = os.environ.get("OCCLUSION_WEIGHTS", None)
+        self.data_yaml = Path(os.environ.get("OCCLUSION_DATA_YAML", str(DEFAULT_DATA_YAML)))
         self.depth_encoder = os.environ.get("OCCLUSION_DEPTH_ENCODER", "vitb")
         self.depth_weights = os.environ.get("OCCLUSION_DEPTH_WEIGHTS", None)
         self.skip_depth = os.environ.get("OCCLUSION_SKIP_DEPTH", "false").lower() == "true"
@@ -91,7 +91,8 @@ def get_depth_estimator() -> DepthEstimator | None:
 
 @lru_cache(maxsize=1)
 def get_class_names() -> list[str]:
-    return load_class_names(PROJECT_ROOT / "data.yaml")
+    settings = get_settings()
+    return load_class_names(settings.data_yaml)
 
 
 @app.exception_handler(Exception)
@@ -116,90 +117,30 @@ def _is_allowed_file(upload: UploadFile) -> bool:
     return suffix in {".jpg", ".jpeg", ".png"}
 
 
-def _serialize_instance(mask_info: Any, masks_np: np.ndarray, image_shape: tuple[int, int]) -> dict[str, Any]:
-    source_index = mask_info.source_index
-    mask = masks_np[source_index] if source_index < len(masks_np) else None
-    polygon, polygon_source = build_detection_polygon(
-        mask=mask,
-        bbox_xyxy=(mask_info.x1, mask_info.y1, mask_info.x2, mask_info.y2),
-        image_shape=image_shape,
-    )
-    return {
-        "class_id": mask_info.class_id,
-        "class_name": mask_info.class_name,
-        "confidence": mask_info.confidence,
-        "bbox": [mask_info.x1, mask_info.y1, mask_info.x2, mask_info.y2],
-        "polygon": polygon_to_points_list(polygon),
-        "polygon_source": polygon_source,
-        "area_px": mask_info.area_px,
-        "centroid": [mask_info.cx, mask_info.cy],
-        "orientation_deg": mask_info.orientation_deg,
-    }
-
-
 def _process_image(image_bgr: np.ndarray) -> dict[str, Any]:
     settings = get_settings()
     seg_model = get_seg_model()
     depth_estimator = get_depth_estimator()
     class_names = get_class_names()
 
-    results = seg_model.predict(
-        source=image_bgr,
+    out = process_image(
+        image_bgr=image_bgr,
+        seg_model=seg_model,
+        depth_estimator=depth_estimator,
+        class_names=class_names,
         imgsz=settings.imgsz,
         conf=settings.conf,
         iou=settings.iou,
-        device=settings.device,
         max_det=settings.max_det,
-        verbose=False,
+        device=settings.device,
     )
-    result = results[0]
-
-    masks_np = result.masks.data.cpu().numpy() if result.masks is not None else np.array([])
-    h, w = image_bgr.shape[:2]
-    if masks_np.ndim == 3:
-        resized_masks = []
-        for m in masks_np:
-            rm = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
-            resized_masks.append(rm > 0)
-        masks_np = np.stack(resized_masks) if resized_masks else np.array([])
-
-    class_ids = result.boxes.cls.cpu().numpy() if result.boxes is not None and result.boxes.cls is not None else np.array([])
-    confidences = result.boxes.conf.cpu().numpy() if result.boxes is not None and result.boxes.conf is not None else None
-
-    image_shape = image_bgr.shape[:2]
-    mask_infos = extract_mask_infos(masks_np, class_ids, class_names, confidences)
-    mask_infos, filtered_mask_infos = filter_top_horizontal_display_masks(mask_infos, image_shape)
-    instances = [_serialize_instance(mask_info, masks_np, image_shape) for mask_info in mask_infos]
-    filtered_instances = [
-        {
-            **_serialize_instance(mask_info, masks_np, image_shape),
-            "filter_reason": "top_horizontal_display_sign",
-        }
-        for mask_info in filtered_mask_infos
-    ]
-    clusters = cluster_masks(mask_infos)
-
-    depth_map = None
-    if depth_estimator is not None:
-        depth_map = depth_estimator.infer(image_bgr)
-    else:
-        depth_map = np.zeros((h, w), dtype=np.float32)
-
-    count_results = count_all_clusters(clusters, depth_map)
-    summary = summarize_counts(count_results)
-    vis_image = compose_result_image(image_bgr, depth_map, clusters, count_results)
 
     # Encode visualization to base64 for optional return
-    import base64
+    vis_image = out["vis_image"]
     _, encoded = cv2.imencode(".jpg", vis_image)
     vis_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8") if encoded is not None else ""
-
-    return {
-        "summary": summary,
-        "instances": instances,
-        "filtered_instances": filtered_instances,
-        "visualization_base64": vis_b64,
-    }
+    out["visualization_base64"] = vis_b64
+    return out
 
 
 @app.post("/api/v1/occlusion/count")

@@ -64,3 +64,21 @@ DEPTH_STEP_THRESHOLD: float = 0.015   # meters; depth discontinuity considered a
 DEPTH_SCALE_CLIP_MIN: float = 0.1     # min depth in meters (clipping)
 DEPTH_SCALE_CLIP_MAX: float = 2.0     # max depth in meters (clipping)
 COUNT_DIFF_TOLERANCE: int = 1         # allowed diff between visible_count and estimated_total for "high" confidence
+
+# ---------------------------------------------------------------------------
+# Countable / uncountable classification
+# ---------------------------------------------------------------------------
+UNCOUNTABLE_MASK_IOU_THRESHOLD: float = 0.30      # max allowed IoU inside a countable cluster
+UNCOUNTABLE_STEP_RATIO_THRESHOLD: float = 1.5     # steps / visible_count > this -> uncountable
+UNCOUNTABLE_DENSITY_MASKS_PER_M: float = 50.0     # masks per meter of depth > this -> uncountable
+UNCOUNTABLE_MIN_CONFIDENCE_RATIO: float = 0.50    # fraction of masks with conf < 0.5 -> uncountable
+UNCOUNTABLE_MIN_VISIBLE_FOR_REFERENCE: int = 2    # min visible items to learn unit depth
+
+# ---------------------------------------------------------------------------
+# Context-aware instance decision thresholds (no-depth mode)
+# ---------------------------------------------------------------------------
+DECISION_CONFIRMED_THRESHOLD: float = 0.80        # confidence >= this -> confirmed
+DECISION_CONTEXT_MIN_CONF: float = 0.25           # min confidence to be considered for context support
+DECISION_CONTEXT_MAX_CONF: float = 0.80           # max confidence for context-support tier
+DECISION_VERTICAL_ASPECT_MIN: float = 1.5         # mask height / width >= this -> vertical shape
+DECISION_CLUSTER_AXIS_ALIGN_DEG: float = 30.0     # mask centroid within this angle of cluster axis
