@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 .idea/
 
+# Local datasets and test images
+data/
+data_occlusion/
+test/
+
 outputs/
 runs/
 *.pt
