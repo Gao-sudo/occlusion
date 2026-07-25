@@ -8,7 +8,7 @@
 
 ```text
 run_tag: axis_cap_crossdup_v4
-weights: outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+weights: best.pt
 data_yaml: data/data.yaml
 imgsz: 640
 conf: 0.25
@@ -99,10 +99,10 @@ data/labels/val
 当前最佳权重：
 
 ```text
-outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+best.pt
 ```
 
-注意：`data/`、`outputs/`、`*.pt` 通常被 `.gitignore` 忽略。提交代码时不会自动带上数据和权重，需要单独交付或放到约定的模型目录。
+注意：`data/`、`outputs/`、`*.pt` 通常被 `.gitignore` 忽略。当前推理代码默认从项目根目录读取 `best.pt`。提交代码时不会自动带上数据和权重，需要单独交付或放到约定的模型目录。
 
 ## API 批量计数
 
@@ -167,13 +167,13 @@ curl -X POST "http://127.0.0.1:8001/api/v1/count/batch" `
 API 默认读取当前最佳权重：
 
 ```text
-outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+best.pt
 ```
 
 也可以用环境变量覆盖：
 
 ```powershell
-$env:OCCLUSION_WEIGHTS="outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt"
+$env:OCCLUSION_WEIGHTS="best.pt"
 $env:OCCLUSION_DATA_YAML="data/data.yaml"
 $env:OCCLUSION_DEVICE="0"
 $env:OCCLUSION_IMGSZ="640"
@@ -190,7 +190,7 @@ uvicorn api:app --host 0.0.0.0 --port 8001
 ```powershell
 python infer.py `
   --source path/to/image.jpg `
-  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --weights best.pt `
   --data-yaml data/data.yaml `
   --device 0 `
   --imgsz 640 `
@@ -206,7 +206,7 @@ python infer.py `
 ```powershell
 python infer.py `
   --source path/to/images `
-  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --weights best.pt `
   --data-yaml data/data.yaml `
   --device 0 `
   --imgsz 640 `
@@ -231,7 +231,7 @@ outputs/occlusion/occlusion_infer/<run_tag>/meta/results.json
 ```powershell
 python tools/run_validation_inference.py `
   --run-tag axis_cap_crossdup_v4 `
-  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --weights best.pt `
   --data-yaml data/data.yaml `
   --device 0 `
   --imgsz 640 `
@@ -267,7 +267,7 @@ outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/meta/worst_visible_count_
 python tools/sweep_inference_params.py `
   --python python `
   --sweep-tag multiclss_visible_sweep_v1 `
-  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --weights best.pt `
   --data-yaml data/data.yaml `
   --device 0 `
   --imgsz-values 640,960,1280 `

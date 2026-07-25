@@ -3,7 +3,7 @@
 Example:
     python -m occlusion.infer \
         --source ./test_imgs \
-        --weights ./outputs/yolov11s_seg/best.pt \
+        --weights ./best.pt \
         --device 0
 """
 from __future__ import annotations

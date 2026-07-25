@@ -40,15 +40,7 @@ from occlusion.utils import load_class_names
 
 app = FastAPI(title="Product Visible Count API", version="1.0.0")
 
-DEFAULT_BEST_WEIGHTS = (
-    PROJECT_ROOT
-    / "outputs"
-    / "occlusion"
-    / "data_80_20_baseline"
-    / "baseline_20e"
-    / "weights"
-    / "best.pt"
-)
+DEFAULT_BEST_WEIGHTS = PROJECT_ROOT / "best.pt"
 
 
 class OcclusionSettings:
