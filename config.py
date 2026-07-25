@@ -7,10 +7,10 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Project paths (resolved relative to project root)
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data_occlusion"
-DEFAULT_DATA_YAML = PROJECT_ROOT / "data_occlusion" / "data.yaml"
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+DEFAULT_DATA_YAML = PROJECT_ROOT / "data" / "data.yaml"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "occlusion"
 DEFAULT_PRETRAINED_SEG = PROJECT_ROOT / "yolo11s-seg.pt"  # official Ultralytics seg weights
 

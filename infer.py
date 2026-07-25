@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-encoder", type=str, default="vitb", choices=["vits", "vitb", "vitl", "vitg"])
     parser.add_argument("--depth-weights", type=str, default=None, help="Path to DA-V2 weights")
     parser.add_argument("--skip-depth", action="store_true", help="Skip depth estimation; use mask-only heuristic")
+    parser.add_argument("--class-priors", type=Path, default=None, help="Optional class_priors.json path")
+    parser.add_argument("--enable-class-priors", action="store_true", help="Enable class-prior geometry filtering")
+    parser.add_argument("--enable-roi-refine", action="store_true", help="Enable dense ROI second-pass inference")
+    parser.add_argument("--enable-physical-merge", action="store_true", help="Enable strong same-item fragment merging")
     return parser.parse_args()
 
 
@@ -92,6 +96,11 @@ def run_single_image(
     iou: float,
     max_det: int,
     device: str,
+    data_yaml: Path | None = None,
+    class_priors_path: Path | None = None,
+    enable_class_priors: bool = False,
+    enable_roi_refine: bool = False,
+    enable_physical_merge: bool = False,
 ) -> dict[str, Any]:
     """Run occlusion counting on a single image."""
     image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
@@ -108,6 +117,11 @@ def run_single_image(
         iou=iou,
         max_det=max_det,
         device=str(device),
+        data_yaml=data_yaml,
+        class_priors_path=class_priors_path,
+        enable_class_priors=enable_class_priors,
+        enable_roi_refine=enable_roi_refine,
+        enable_physical_merge=enable_physical_merge,
     )
     out["summary"]["image"] = str(image_path)
     return out
@@ -167,6 +181,11 @@ def main() -> None:
             iou=args.iou,
             max_det=args.max_det,
             device=str(args.device),
+            data_yaml=_resolve_input_path(args.data_yaml),
+            class_priors_path=_resolve_input_path(args.class_priors) if args.class_priors is not None else None,
+            enable_class_priors=args.enable_class_priors,
+            enable_roi_refine=args.enable_roi_refine,
+            enable_physical_merge=args.enable_physical_merge,
         )
         record = {
             "summary": out["summary"],

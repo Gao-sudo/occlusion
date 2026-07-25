@@ -82,6 +82,52 @@ def estimate_unit_depth_per_class(
     return {cls: float(np.median(values)) for cls, values in records.items()}
 
 
+def _count_dense_axis_slots(cluster: ClusterInfo) -> int:
+    if not cluster.masks:
+        return 0
+    ax, ay = cluster.axis_direction
+    if abs(ax) < 1e-9 and abs(ay) < 1e-9:
+        return len(cluster.masks)
+
+    center_x, center_y = cluster.center
+    projections: list[tuple[float, float, float]] = []
+    for mask_info in cluster.masks:
+        dx = mask_info.cx - center_x
+        dy = mask_info.cy - center_y
+        projection = dx * ax + dy * ay
+        length = max(mask_info.x2 - mask_info.x1, mask_info.y2 - mask_info.y1)
+        half_span = max(8.0, float(length) * 0.35)
+        projections.append((projection - half_span, projection + half_span, mask_info.confidence))
+
+    projections.sort(key=lambda item: item[0])
+    slots = 0
+    current_start, current_end, current_conf = projections[0]
+    for start, end, conf in projections[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+            current_conf = max(current_conf, conf)
+        else:
+            slots += 1
+            current_start, current_end, current_conf = start, end, conf
+    slots += 1
+    return max(1, slots)
+
+
+def _single_class_dense_estimate(
+    cluster: ClusterInfo,
+    visible_count: int,
+    learned_unit: float | None,
+    depth_range: float,
+    steps: list[tuple[float, float]],
+) -> int:
+    slot_count = _count_dense_axis_slots(cluster)
+    step_count = max(1, len(steps)) if steps else 1
+    estimates = [slot_count, step_count]
+    if learned_unit and learned_unit > 0 and depth_range > 0:
+        estimates.append(max(1, int(round(depth_range / learned_unit))))
+    return max(1, min(estimates + [visible_count]))
+
+
 def count_cluster(
     cluster: ClusterInfo,
     depth_map: np.ndarray,
@@ -141,12 +187,30 @@ def count_cluster(
     depth_range = depth_max - depth_min
     result.depth_range_m = depth_range
 
+    # --- Shared step extraction ---
+    steps = detect_depth_steps(positions, depths, step_threshold_m=step_threshold)
+    result.depth_steps = steps
+
     # --- Uncountable track: density estimation via learned unit depth ---
     if cluster.countability == "uncountable":
         learned_unit = unit_depth_map.get(class_name) if unit_depth_map else None
         result.learned_unit_depth_m = learned_unit
 
-        if learned_unit and learned_unit > 0 and depth_range > 0:
+        single_class_mode = cluster.dominant_class_name == "countable_product" or class_name == "countable_product"
+        if single_class_mode:
+            estimated = _single_class_dense_estimate(
+                cluster,
+                visible_count=visible_count,
+                learned_unit=learned_unit,
+                depth_range=depth_range,
+                steps=steps,
+            )
+            result.estimated_total = estimated
+            result.occlusion_inferred = max(0, estimated - visible_count)
+            result.confidence = "medium"
+            result.method = "single_class_dense_slots"
+            result.unit_depth_m = learned_unit
+        elif learned_unit and learned_unit > 0 and depth_range > 0:
             estimated = max(visible_count, int(round(depth_range / learned_unit)))
             result.estimated_total = estimated
             result.occlusion_inferred = estimated - visible_count
@@ -162,8 +226,6 @@ def count_cluster(
         return result
 
     # --- Countable track: classic fusion ---
-    steps = detect_depth_steps(positions, depths, step_threshold_m=step_threshold)
-    result.depth_steps = steps
 
     spec = sku_specs.get(class_name, {})
     unit_depth = spec.get("unit_depth_m")

@@ -1,28 +1,28 @@
-"""Independent FastAPI service for occlusion-aware counting.
-
-Runs on a separate port from api/app.py (default 8001) so both services can
-coexist without any code changes to the existing API.
+"""FastAPI service for product visible-count inference.
 
 Start:
-    uvicorn occlusion.api:app --host 0.0.0.0 --port 8001
+    uvicorn api:app --host 0.0.0.0 --port 8001
 
-Endpoints:
-    POST /api/v1/occlusion/count
-    POST /api/v1/occlusion/analyze
+Endpoint:
+    POST /api/v1/count/batch
 """
 from __future__ import annotations
 
 import base64
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import JSONResponse
 from ultralytics import YOLO
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from occlusion.config import (
     DEFAULT_CONF,
@@ -38,7 +38,17 @@ from occlusion.depth_estimator import DepthEstimator
 from occlusion.pipeline import process_image
 from occlusion.utils import load_class_names
 
-app = FastAPI(title="Jomoo Occlusion Counting API", version="1.1.0")
+app = FastAPI(title="Product Visible Count API", version="1.0.0")
+
+DEFAULT_BEST_WEIGHTS = (
+    PROJECT_ROOT
+    / "outputs"
+    / "occlusion"
+    / "data_80_20_baseline"
+    / "baseline_20e"
+    / "weights"
+    / "best.pt"
+)
 
 
 class OcclusionSettings:
@@ -65,11 +75,14 @@ def get_seg_model() -> YOLO:
     settings = get_settings()
     weights = settings.weights
     if weights is None:
-        candidates = sorted((PROJECT_ROOT / "outputs" / "occlusion").rglob("best.pt")) if (PROJECT_ROOT / "outputs" / "occlusion").exists() else []
-        if candidates:
-            weights = str(candidates[-1])
+        if DEFAULT_BEST_WEIGHTS.exists():
+            weights = str(DEFAULT_BEST_WEIGHTS)
         else:
-            weights = str(DEFAULT_PRETRAINED_SEG)
+            candidates = sorted((PROJECT_ROOT / "outputs" / "occlusion").rglob("best.pt")) if (PROJECT_ROOT / "outputs" / "occlusion").exists() else []
+            if candidates:
+                weights = str(candidates[-1])
+            else:
+                weights = str(DEFAULT_PRETRAINED_SEG)
     return YOLO(weights)
 
 
@@ -117,7 +130,7 @@ def _is_allowed_file(upload: UploadFile) -> bool:
     return suffix in {".jpg", ".jpeg", ".png"}
 
 
-def _process_image(image_bgr: np.ndarray) -> dict[str, Any]:
+def _process_image(image_bgr: np.ndarray, include_visualization: bool = False) -> dict[str, Any]:
     settings = get_settings()
     seg_model = get_seg_model()
     depth_estimator = get_depth_estimator()
@@ -133,68 +146,79 @@ def _process_image(image_bgr: np.ndarray) -> dict[str, Any]:
         iou=settings.iou,
         max_det=settings.max_det,
         device=settings.device,
+        data_yaml=settings.data_yaml,
     )
 
-    # Encode visualization to base64 for optional return
-    vis_image = out["vis_image"]
-    _, encoded = cv2.imencode(".jpg", vis_image)
-    vis_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8") if encoded is not None else ""
-    out["visualization_base64"] = vis_b64
+    if include_visualization:
+        vis_image = out["vis_image"]
+        _, encoded = cv2.imencode(".jpg", vis_image)
+        out["visualization_base64"] = base64.b64encode(encoded.tobytes()).decode("utf-8") if encoded is not None else ""
     return out
 
 
-@app.post("/api/v1/occlusion/count")
-@app.post("/api/occlusion/count")
-async def count_endpoint(images: list[UploadFile] = File(...)) -> Any:
-    if not images:
-        return JSONResponse(status_code=400, content={"code": 1001, "msg": "No image uploaded", "data": None})
-    if any(not _is_allowed_file(u) for u in images):
-        return JSONResponse(status_code=400, content={"code": 1002, "msg": "Invalid file format", "data": None})
+def _compact_result(filename: str | None, out: dict[str, Any], include_instances: bool, include_visualization: bool) -> dict[str, Any]:
+    summary = out["summary"]
+    per_class_summary = summary.get("per_class_summary", {})
+    if isinstance(per_class_summary, dict):
+        items = [
+            {
+                "category": str(category),
+                "count": int(values.get("total", 0)) if isinstance(values, dict) else int(values),
+            }
+            for category, values in per_class_summary.items()
+        ]
+    else:
+        items = []
 
-    payload_results: list[dict[str, Any]] = []
-    for upload in images:
-        data = await upload.read()
-        image = _decode_image(data)
-        if image is None:
-            return JSONResponse(status_code=400, content={"code": 1002, "msg": "Invalid image data", "data": None})
-        out = _process_image(image)
-        payload_results.append({
-            "filename": upload.filename,
-            "summary": out["summary"],
-        })
-
-    return {
-        "code": 200,
-        "msg": "success",
-        "data": payload_results,
+    result: dict[str, Any] = {
+        "filename": filename,
+        "total_count": int(summary.get("total_visible", 0)),
+        "items": items,
     }
+    if include_instances:
+        result["instances"] = out["instances"]
+        result["filtered_instances"] = out["filtered_instances"]
+    if include_visualization:
+        result["visualization_base64"] = out["visualization_base64"]
+    return result
 
 
-@app.post("/api/v1/occlusion/analyze")
-@app.post("/api/occlusion/analyze")
-async def analyze_endpoint(images: list[UploadFile] = File(...)) -> Any:
+@app.post("/api/v1/count/batch")
+async def batch_count_endpoint(
+    images: list[UploadFile] = File(...),
+    include_instances: bool = Form(False),
+    include_visualization: bool = Form(False),
+) -> Any:
+    """Batch visible-count inference.
+
+    Request:
+        multipart/form-data
+        - images: one or more jpg/jpeg/png files
+        - include_instances: optional bool, default false
+        - include_visualization: optional bool, default false
+    """
     if not images:
         return JSONResponse(status_code=400, content={"code": 1001, "msg": "No image uploaded", "data": None})
     if any(not _is_allowed_file(u) for u in images):
-        return JSONResponse(status_code=400, content={"code": 1002, "msg": "Invalid file format", "data": None})
+        return JSONResponse(status_code=400, content={"code": 1002, "msg": "Only jpg, jpeg and png files are supported", "data": None})
 
-    payload_results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for upload in images:
         data = await upload.read()
         image = _decode_image(data)
         if image is None:
-            return JSONResponse(status_code=400, content={"code": 1002, "msg": "Invalid image data", "data": None})
-        out = _process_image(image)
-        payload_results.append({
-            "filename": upload.filename,
-            "summary": out["summary"],
-            "instances": out["instances"],
-            "filtered_instances": out["filtered_instances"],
-            "visualization_base64": out["visualization_base64"],
-        })
+            return JSONResponse(
+                status_code=400,
+                content={"code": 1002, "msg": f"Invalid image data: {upload.filename}", "data": None},
+            )
+        out = _process_image(image, include_visualization=include_visualization)
+        results.append(_compact_result(upload.filename, out, include_instances, include_visualization))
 
     return {
         "code": 200,
         "msg": "success",
-        "data": payload_results,
+        "data": {
+            "total_images": len(results),
+            "results": results,
+        },
     }

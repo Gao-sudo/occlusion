@@ -97,9 +97,11 @@ def classify_instance_decision(
     if _is_part_of_product_cluster(mask_info, cluster):
         reasons.append("part_of_product_cluster")
 
+    weak_axis_only_context = reasons == ["aligned_with_cluster_axis"]
+
     # Tier 2: context-supported detections
     # Normal confidence range
-    if context_min_conf <= conf < context_max_conf and reasons:
+    if context_min_conf <= conf < context_max_conf and reasons and not weak_axis_only_context:
         return "confirmed_by_context", reasons
 
     # Very low confidence but strongly supported by cluster context

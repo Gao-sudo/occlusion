@@ -1,191 +1,358 @@
-# 遮挡商品识别与计数
+# Occlusion Visible Count
 
-核心流程是训练 YOLO 分割模型，对单张图片或图片目录做推理，过滤常见的横向招牌误检，并输出商品数量、类别、置信度、边界框和多边形轮廓等结构化结果。
+商品遮挡场景下的可见数量识别项目。主流程使用 YOLO segmentation 输出商品实例，再通过后处理规则过滤展示牌、重复框、弱候选和跨类别重复候选，最终输出每个类别的可见数量。
 
-## 功能
+## 当前最佳版本
 
-- 支持商品自定义类别的 YOLO-seg 训练。
-- 支持单图和目录批量推理。
-- 支持 FastAPI 接口服务。
-- 支持中文类别名输出。
-- 输出实例级信息：类别、置信度、bbox、polygon、mask 面积、中心点、主方向角。
-- 对上方横向招牌误检做几何后处理过滤。
-- 支持可选的 Depth Anything V2 深度估计；也可以使用 `--skip-depth` 跳过深度，只按可见实例计数。
-
-## 项目结构
+当前推荐推理配置：
 
 ```text
-occlusion/
-  api.py                  FastAPI 接口服务
-  config.py               默认路径和训练/推理参数
-  depth_estimator.py      Depth Anything V2 深度估计封装
-  fusion_counter.py       可见数量与遮挡推断数量融合
-  infer.py                命令行推理入口
-  label_convert.py        bbox、polygon、mask 转换工具
-  mask_analyzer.py        mask 几何分析、聚类和误检过滤
-  prepare_seg_dataset.py  YOLO bbox 数据集转 YOLO-seg 数据集
-  train_seg.py            YOLO-seg 训练入口
-  utils.py                图片、YAML、JSON 和目录工具
-  visualizer.py           mask、标签和计数结果可视化
+run_tag: axis_cap_crossdup_v4
+weights: outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+data_yaml: data/data.yaml
+imgsz: 640
+conf: 0.25
+iou: 0.50
+max_det: 300
+device: 0
 ```
 
-数据集、模型权重、训练输出和推理输出不会提交到 Git 仓库，需要单独保存或传输。
-
-
-## 环境安装
-
-建议使用 Python 3.8 及以上版本。基础依赖：
-
-```bash
-pip install ultralytics opencv-python numpy pyyaml scikit-learn pillow fastapi uvicorn python-multipart
-```
-
-PyTorch 请根据本机 CUDA 或 CPU 环境单独安装。
-
-## 数据集格式
-
-默认使用 YOLO-seg 数据集结构：
+验证集结果：
 
 ```text
-data_occlusion/
-  data.yaml
-  images/
-    train/
-    val/
-    test/
-  labels/
-    train/
-    val/
-    test/
+images = 72
+exact = 56 / 72 = 77.78%
+MAE = 0.25
+bias_pred_minus_gt = 0.083333
+max_abs_error = 2
+误差 <= 1: 70 / 72 = 97.22%
 ```
 
-如果原始标注是 YOLO bbox 格式，可以先转换成 YOLO-seg polygon：
+## 关键代码
 
-```bash
-python -m occlusion.prepare_seg_dataset \
-  --src-root /path/to/source_dataset \
-  --dst-root /path/to/data_occlusion \
-  --splits train val \
-  --polygon-mode bbox
+推理主链路：
+
+```text
+api.py                  FastAPI 批量计数接口
+infer.py                命令行单图/目录推理
+pipeline.py             统一推理流程
+mask_analyzer.py        mask 几何分析、过滤、去重、countability 规则
+decision_engine.py      confirmed / confirmed_by_context / unknown 判定
+fusion_counter.py       cluster 级计数汇总
+visualizer.py           可视化输出
+config.py               默认路径和推理参数
+utils.py                通用 IO / data.yaml 读取
 ```
 
-如果需要用 SAM 细化 polygon，可以使用 `--polygon-mode sam`，并传入 SAM checkpoint。
+训练与数据准备：
+
+```text
+train_seg.py                         YOLO segmentation 训练入口
+prepare_seg_dataset.py               分割数据准备
+label_convert.py                     标签/多边形转换工具
+```
+
+验证与调参：
+
+```text
+tools/run_validation_inference.py          验证集批量推理
+tools/evaluate_visible_count.py            可见数量评估
+tools/sweep_inference_params.py            imgsz/conf/iou 网格搜索
+```
+
+## 环境依赖
+
+建议 Python 3.8+，GPU 推理需要本机 CUDA/PyTorch 环境可用。
+
+核心依赖：
+
+```text
+ultralytics
+torch
+opencv-python
+numpy
+Pillow
+PyYAML
+fastapi
+uvicorn
+python-multipart
+```
+
+示例安装：
+
+```powershell
+pip install ultralytics opencv-python numpy Pillow PyYAML fastapi uvicorn python-multipart
+```
+
+如果需要 GPU，请按当前 CUDA 版本安装对应 PyTorch。
+
+## 数据与权重
+
+默认验证数据：
+
+```text
+data/data.yaml
+data/images/val
+data/labels/val
+```
+
+当前最佳权重：
+
+```text
+outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+```
+
+注意：`data/`、`outputs/`、`*.pt` 通常被 `.gitignore` 忽略。提交代码时不会自动带上数据和权重，需要单独交付或放到约定的模型目录。
+
+## API 批量计数
+
+启动服务：
+
+```powershell
+uvicorn api:app --host 0.0.0.0 --port 8001
+```
+
+接口：
+
+```text
+POST /api/v1/count/batch
+```
+
+请求格式：`multipart/form-data`
+
+参数：
+
+```text
+images                必填，可上传一张或多张 jpg/jpeg/png
+include_instances     可选，默认 false；true 时返回实例明细
+include_visualization 可选，默认 false；true 时返回可视化 base64
+```
+
+调用示例：
+
+```powershell
+curl -X POST "http://127.0.0.1:8001/api/v1/count/batch" `
+  -F "images=@test1.jpg" `
+  -F "images=@test2.jpg"
+```
+
+默认返回：
+
+```json
+{
+  "code": 200,
+  "msg": "success",
+  "data": {
+    "total_images": 1,
+    "results": [
+      {
+        "filename": "test.jpg",
+        "total_count": 6,
+        "items": [
+          {
+            "category": "九牧增压花洒",
+            "count": 1
+          },
+          {
+            "category": "九牧安全角阀",
+            "count": 4
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+API 默认读取当前最佳权重：
+
+```text
+outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt
+```
+
+也可以用环境变量覆盖：
+
+```powershell
+$env:OCCLUSION_WEIGHTS="outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt"
+$env:OCCLUSION_DATA_YAML="data/data.yaml"
+$env:OCCLUSION_DEVICE="0"
+$env:OCCLUSION_IMGSZ="640"
+$env:OCCLUSION_CONF="0.25"
+$env:OCCLUSION_IOU="0.50"
+$env:OCCLUSION_MAX_DET="300"
+uvicorn api:app --host 0.0.0.0 --port 8001
+```
+
+## 命令行推理
+
+单张图片：
+
+```powershell
+python infer.py `
+  --source path/to/image.jpg `
+  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --data-yaml data/data.yaml `
+  --device 0 `
+  --imgsz 640 `
+  --conf 0.25 `
+  --iou 0.50 `
+  --max-det 300 `
+  --skip-depth `
+  --run-tag demo_single
+```
+
+目录推理：
+
+```powershell
+python infer.py `
+  --source path/to/images `
+  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --data-yaml data/data.yaml `
+  --device 0 `
+  --imgsz 640 `
+  --conf 0.25 `
+  --iou 0.50 `
+  --max-det 300 `
+  --skip-depth `
+  --run-tag demo_batch
+```
+
+输出目录：
+
+```text
+outputs/occlusion/occlusion_infer/<run_tag>/visualizations
+outputs/occlusion/occlusion_infer/<run_tag>/meta/results.json
+```
+
+## 验证集复现
+
+当前最佳配置推理：
+
+```powershell
+python tools/run_validation_inference.py `
+  --run-tag axis_cap_crossdup_v4 `
+  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --data-yaml data/data.yaml `
+  --device 0 `
+  --imgsz 640 `
+  --conf 0.25 `
+  --iou 0.50 `
+  --max-det 300
+```
+
+评估：
+
+```powershell
+python tools/evaluate_visible_count.py `
+  --results outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/meta/results.json `
+  --images data/images/val `
+  --labels data/labels/val `
+  --data-yaml data/data.yaml
+```
+
+查看效果：
+
+```text
+outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/visualizations
+outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/meta/visible_count_eval_summary.json
+outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/meta/visible_count_eval.csv
+outputs/occlusion/occlusion_infer/axis_cap_crossdup_v4/meta/worst_visible_count_cases.csv
+```
+
+## 参数搜索
+
+用于验证不同 `imgsz/conf/iou` 的组合：
+
+```powershell
+python tools/sweep_inference_params.py `
+  --python python `
+  --sweep-tag multiclss_visible_sweep_v1 `
+  --weights outputs/occlusion/data_80_20_baseline/baseline_20e/weights/best.pt `
+  --data-yaml data/data.yaml `
+  --device 0 `
+  --imgsz-values 640,960,1280 `
+  --conf-values 0.15,0.20,0.25 `
+  --iou-values 0.50,0.60 `
+  --max-det 300
+```
+
+搜索结果：
+
+```text
+outputs/occlusion/param_sweeps/<sweep_tag>/sweep_results.csv
+outputs/occlusion/param_sweeps/<sweep_tag>/sweep_results.json
+```
 
 ## 训练
 
-在包含 `occlusion` 包的父目录执行：
+多类 YOLO segmentation 训练入口：
 
-```bash
-python -m occlusion.train_seg \
-  --data-root ./data_occlusion \
-  --epochs 200 \
-  --imgsz 640 \
-  --batch 8 \
-  --device 0 \
-  --name occlusion_seg
+```powershell
+python train_seg.py `
+  --data-yaml data/data.yaml `
+  --weights yolo11m-seg.pt `
+  --epochs 300 `
+  --imgsz 896 `
+  --batch 8 `
+  --device 0 `
+  --project runs/occlusion_seg `
+  --name yolov11m_seg_multiclass `
+  --run-tag multiclass_train
 ```
 
 训练产物会整理到：
 
 ```text
-outputs/occlusion/occlusion/<run_tag>/
-  weights/best.pt
-  weights/last.pt
-  visualizations/
-  logs/
-  meta/summary.json
+outputs/occlusion/occlusion/<run_tag>/weights/best.pt
+outputs/occlusion/occlusion/<run_tag>/weights/last.pt
+outputs/occlusion/occlusion/<run_tag>/logs
+outputs/occlusion/occlusion/<run_tag>/visualizations
+outputs/occlusion/occlusion/<run_tag>/meta/summary.json
 ```
 
-## 推理
+## 当前后处理核心规则
 
-单张图片推理：
-
-```bash
-python -m occlusion.infer \
-  --source /path/to/image.jpg \
-  --weights /path/to/best.pt \
-  --data-yaml /path/to/data_occlusion/data.yaml \
-  --device 0 \
-  --skip-depth
-```
-
-目录批量推理：
-
-```bash
-python -m occlusion.infer \
-  --source /path/to/images \
-  --weights /path/to/best.pt \
-  --run-tag batch_test \
-  --skip-depth
-```
-
-推理结果保存到：
+主要在 `mask_analyzer.py`：
 
 ```text
-outputs/occlusion/occlusion_infer/<run_tag>/
-  visualizations/
-  meta/results.json
+1. 过滤顶部大面积横向展示牌
+2. 低置信 context-only 候选过滤
+3. 同类强包含重复碎片过滤
+4. 同类 axis-only unknown 数量上限
+5. 跨类别强重合重复框过滤
+6. context/unknown 高包含且中心接近的重复框过滤
 ```
 
-`results.json` 主要字段：
+这些规则对应当前 `axis_cap_crossdup_v4` 最佳结果。
 
-- `summary`：总可见数量、估计总数、遮挡推断数量和各聚类计数结果。
-- `instances`：参与计数的商品实例。
-- `filtered_instances`：被后处理过滤掉的实例。
+## 提交流程建议
 
-## 横向招牌误检过滤
+提交代码时建议包含：
 
-部分门店图片中，上方横向招牌可能被模型误识别为商品。当前使用几何规则做后处理过滤，满足以下特征的实例会在计数前被移除：
-
-- mask 面积相对整图较大；
-- 中心点位于图片上方区域；
-- mask 主方向接近水平。
-
-被过滤的目标不会进入聚类和计数，但会写入 `filtered_instances`，并带有：
-
-```json
-"filter_reason": "top_horizontal_display_sign"
+```text
+api.py
+config.py
+decision_engine.py
+fusion_counter.py
+infer.py
+mask_analyzer.py
+pipeline.py
+train_seg.py
+visualizer.py
+utils.py
+label_convert.py
+prepare_seg_dataset.py
+tools/
+README.md
 ```
 
-这样后续可以检查过滤是否合理。
+不要把下面内容直接提交到代码仓库，除非仓库明确允许大文件：
 
-## API 服务
-
-启动服务：
-
-```bash
-uvicorn occlusion.api:app --host 0.0.0.0 --port 8001
+```text
+data/
+outputs/
+*.pt
+*.log
 ```
 
-常用环境变量：
-
-```bash
-OCCLUSION_WEIGHTS=/path/to/best.pt
-OCCLUSION_DEVICE=0
-OCCLUSION_IMGSZ=640
-OCCLUSION_CONF=0.25
-OCCLUSION_IOU=0.5
-OCCLUSION_SKIP_DEPTH=true
-```
-
-接口：
-
-- `POST /api/v1/occlusion/count`
-- `POST /api/v1/occlusion/analyze`
-- 兼容接口：
-  - `POST /api/occlusion/count`
-  - `POST /api/occlusion/analyze`
-
-调用示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8001/api/v1/occlusion/analyze" \
-  -F "images=@/path/to/image.jpg"
-```
-
-## 注意事项
-
-- `data.yaml` 必须使用 UTF-8 编码，避免中文类别名乱码。
-- 可视化标签使用 Pillow 和系统中文字体绘制，支持中文显示。
-- `__pycache__`、虚拟环境、训练输出、推理输出和模型权重已在 `.gitignore` 中忽略。
-- 当前过滤规则是针对“上方横向招牌”的启发式规则，如果后续出现特殊商品形态，需要结合数据继续调整阈值或改为类别/区域约束。
+权重和数据建议通过网盘、制品库或模型目录单独交付。
