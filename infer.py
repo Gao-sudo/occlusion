@@ -12,7 +12,7 @@ import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -89,15 +89,15 @@ def _list_images(source: Path) -> list[Path]:
 def run_single_image(
     image_path: Path,
     seg_model: YOLO,
-    depth_estimator: DepthEstimator | None,
+    depth_estimator: Optional[DepthEstimator],
     class_names: list[str],
     imgsz: int,
     conf: float,
     iou: float,
     max_det: int,
     device: str,
-    data_yaml: Path | None = None,
-    class_priors_path: Path | None = None,
+    data_yaml: Optional[Path] = None,
+    class_priors_path: Optional[Path] = None,
     enable_class_priors: bool = False,
     enable_roi_refine: bool = False,
     enable_physical_merge: bool = False,

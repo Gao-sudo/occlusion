@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal, Optional, Union
 
 import cv2
 import numpy as np
@@ -92,7 +92,7 @@ class DepthEstimator:
         self,
         encoder: Literal["vits", "vitb", "vitl", "vitg"] = DEPTH_ENCODER,
         device: str | torch.device = "cuda",
-        weights_path: str | Path | None = None,
+        weights_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self.encoder = encoder
         if isinstance(device, str):
@@ -216,7 +216,7 @@ class DepthEstimator:
         self,
         raw_depths: list[np.ndarray],
         gt_depths: list[np.ndarray],
-        masks: list[np.ndarray] | None = None,
+        masks: Optional[List[np.ndarray]] = None,
     ) -> tuple[float, float]:
         """Calibrate scale and offset using a few ground-truth depth samples.
 

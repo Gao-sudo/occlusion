@@ -11,7 +11,7 @@ is unreliable for side-by-side hanging products in the current setup.
 """
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -25,7 +25,7 @@ from occlusion.config import (
 from occlusion.mask_analyzer import ClusterInfo, MaskInfo, is_mask_axis_aligned
 
 
-def _is_inside_roi(mask_info: MaskInfo, roi: tuple[int, int, int, int] | Sequence[int]) -> bool:
+def _is_inside_roi(mask_info: MaskInfo, roi: Union[Tuple[int, int, int, int], Sequence[int]]) -> bool:
     """Check whether mask centroid is inside a bounding-box ROI (x1, y1, x2, y2)."""
     if roi is None or len(roi) != 4:
         return False
@@ -47,14 +47,14 @@ def _has_vertical_shape(mask_info: MaskInfo, min_aspect: float = DECISION_VERTIC
 
 def _same_cluster_has_high_conf_instance(
     mask_info: MaskInfo,
-    cluster: ClusterInfo | None,
+    cluster: Optional[ClusterInfo],
 ) -> bool:
     if cluster is None:
         return False
     return mask_info.source_index in cluster.high_conf_source_indices or len(cluster.high_conf_source_indices) > 0
 
 
-def _is_part_of_product_cluster(mask_info: MaskInfo, cluster: ClusterInfo | None) -> bool:
+def _is_part_of_product_cluster(mask_info: MaskInfo, cluster: Optional[ClusterInfo]) -> bool:
     if cluster is None:
         return False
     # Multi-mask cluster with roughly vertical axis is treated as a product hook/stack.
@@ -67,9 +67,9 @@ def _is_part_of_product_cluster(mask_info: MaskInfo, cluster: ClusterInfo | None
 
 def classify_instance_decision(
     mask_info: MaskInfo,
-    cluster: ClusterInfo | None,
+    cluster: Optional[ClusterInfo],
     image_shape: tuple[int, int],
-    display_roi: tuple[int, int, int, int] | Sequence[int] | None = None,
+    display_roi: Optional[Union[Tuple[int, int, int, int], Sequence[int]]] = None,
     confirmed_threshold: float = DECISION_CONFIRMED_THRESHOLD,
     context_min_conf: float = DECISION_CONTEXT_MIN_CONF,
     context_max_conf: float = DECISION_CONTEXT_MAX_CONF,
@@ -124,7 +124,7 @@ def classify_all_instance_decisions(
     mask_infos: list[MaskInfo],
     cluster_by_source_index: dict[int, ClusterInfo],
     image_shape: tuple[int, int],
-    display_roi: tuple[int, int, int, int] | Sequence[int] | None = None,
+    display_roi: Optional[Union[Tuple[int, int, int, int], Sequence[int]]] = None,
 ) -> None:
     """In-place update of decision fields on all MaskInfo objects."""
     for mask_info in mask_infos:

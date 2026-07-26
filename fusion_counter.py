@@ -6,7 +6,7 @@ the total number of items in a stack, including occluded ones.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -28,9 +28,9 @@ class CountResult:
     estimated_total: int
     occlusion_inferred: int
     confidence: str
-    depth_range_m: float | None = None
-    unit_depth_m: float | None = None
-    learned_unit_depth_m: float | None = None
+    depth_range_m: Optional[float] = None
+    unit_depth_m: Optional[float] = None
+    learned_unit_depth_m: Optional[float] = None
     method: str = "unknown"
     countability: str = "countable"
     countability_reasons: list[str] = field(default_factory=list)
@@ -39,8 +39,8 @@ class CountResult:
     confirmed_by_context_count: int = 0
     unknown_count: int = 0
     # dominant SKU inherited by cluster context
-    dominant_class_id: int | None = None
-    dominant_class_name: str | None = None
+    dominant_class_id: Optional[int] = None
+    dominant_class_name: Optional[str] = None
     # diagnostics
     depth_positions: np.ndarray = field(default_factory=lambda: np.array([]))
     depth_values: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -116,7 +116,7 @@ def _count_dense_axis_slots(cluster: ClusterInfo) -> int:
 def _single_class_dense_estimate(
     cluster: ClusterInfo,
     visible_count: int,
-    learned_unit: float | None,
+    learned_unit: Optional[float],
     depth_range: float,
     steps: list[tuple[float, float]],
 ) -> int:
@@ -131,8 +131,8 @@ def _single_class_dense_estimate(
 def count_cluster(
     cluster: ClusterInfo,
     depth_map: np.ndarray,
-    sku_specs: dict[str, dict[str, Any]] | None = None,
-    unit_depth_map: dict[str, float] | None = None,
+    sku_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+    unit_depth_map: Optional[Dict[str, float]] = None,
     step_threshold: float = DEPTH_STEP_THRESHOLD,
     count_tolerance: int = COUNT_DIFF_TOLERANCE,
 ) -> CountResult:
@@ -231,7 +231,7 @@ def count_cluster(
     unit_depth = spec.get("unit_depth_m")
     result.unit_depth_m = unit_depth
 
-    depth_based_count: int | None = None
+    depth_based_count: Optional[int] = None
     if unit_depth and unit_depth > 0:
         depth_based_count = max(1, int(round(depth_range / unit_depth)))
 
@@ -288,8 +288,8 @@ def count_cluster(
 def count_all_clusters(
     clusters: list[ClusterInfo],
     depth_map: np.ndarray,
-    sku_specs: dict[str, dict[str, Any]] | None = None,
-    unit_depth_map: dict[str, float] | None = None,
+    sku_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+    unit_depth_map: Optional[Dict[str, float]] = None,
     step_threshold: float = DEPTH_STEP_THRESHOLD,
     count_tolerance: int = COUNT_DIFF_TOLERANCE,
 ) -> list[CountResult]:

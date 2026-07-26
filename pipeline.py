@@ -8,7 +8,7 @@ pipeline and returns a structured result dictionary.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -41,9 +41,9 @@ def _serialize_instance(
     mask_info: MaskInfo,
     masks_np: np.ndarray,
     image_shape: tuple[int, int],
-    cluster: ClusterInfo | None = None,
+    cluster: Optional[ClusterInfo] = None,
     countability: str = "countable",
-    countability_reasons: list[str] | None = None,
+    countability_reasons: Optional[List[str]] = None,
 ) -> dict[str, Any]:
     """Convert a MaskInfo into the output JSON dict."""
     source_index = mask_info.source_index
@@ -270,16 +270,16 @@ def _refine_dense_cluster_rois(
 def process_image(
     image_bgr: np.ndarray,
     seg_model: YOLO,
-    depth_estimator: DepthEstimator | None,
+    depth_estimator: Optional[DepthEstimator],
     class_names: list[str],
     imgsz: int,
     conf: float,
     iou: float,
     max_det: int,
     device: str,
-    display_roi: tuple[int, int, int, int] | Sequence[int] | None = None,
+    display_roi: Optional[Union[Tuple[int, int, int, int], Sequence[int]]] = None,
     data_yaml: Any = None,
-    class_priors_path: Path | str | None = None,
+    class_priors_path: Optional[Union[Path, str]] = None,
     enable_class_priors: bool = False,
     enable_roi_refine: bool = False,
     enable_physical_merge: bool = False,

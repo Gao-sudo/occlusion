@@ -1,13 +1,13 @@
 """Helpers for converting labels and polygons for YOLO-seg workflows."""
 from __future__ import annotations
 
-from typing import Iterable, Any
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import cv2
 import numpy as np
 
 
-def parse_yolo_bbox_line(line: str) -> tuple[int, float, float, float, float] | None:
+def parse_yolo_bbox_line(line: str) -> Optional[Tuple[int, float, float, float, float]]:
     """Parse one YOLO bbox row.
 
     Returns:
@@ -108,7 +108,7 @@ def bbox_xyxy_to_polygon(x1: float, y1: float, x2: float, y2: float) -> np.ndarr
 
 def normalize_polygon_points(
     points: np.ndarray | Iterable[Iterable[float]],
-    image_shape: tuple[int, int] | None = None,
+    image_shape: Optional[Tuple[int, int]] = None,
 ) -> np.ndarray:
     """Normalize polygon points to [0, 1] if image shape is provided, then clip."""
     polygon = np.asarray(points, dtype=np.float32).reshape(-1, 2).copy()
@@ -238,7 +238,7 @@ def mask_to_polygon(
     min_points: int = 4,
     min_contour_area: float = 0.0,
     chain_method: int = cv2.CHAIN_APPROX_SIMPLE,
-) -> np.ndarray | None:
+) -> Optional[np.ndarray]:
     """Extract a stable polygon from a binary mask.
 
     The largest external contour is simplified with approxPolyDP.
@@ -274,7 +274,7 @@ def sam_mask_to_polygon(
     mask01: np.ndarray,
     epsilon_ratio: float = 0.0045,
     min_area_px: int = 30,
-) -> np.ndarray | None:
+) -> Optional[np.ndarray]:
     """Convert a cleaned SAM mask into a simplified pixel-space polygon."""
     mask_u8 = (mask01 > 0).astype(np.uint8) * 255
     return mask_to_polygon(
@@ -302,7 +302,7 @@ def refine_bbox_to_polygon_with_sam(
     min_mask_area_px: int = 30,
     epsilon_ratio: float = 0.0045,
     fallback_mode: str = "skip",
-) -> tuple[np.ndarray | None, str, dict[str, float | int | bool]]:
+) -> Tuple[Optional[np.ndarray], str, Dict[str, Any]]:
     """Refine one bbox into a polygon using a preloaded SAM predictor."""
     h, w = image_shape
     x1, y1, x2, y2 = map(int, bbox_xyxy)
@@ -350,13 +350,13 @@ def refine_bbox_to_polygon_with_sam(
             best_score = candidate_score
             best_idx = idx
 
-    meta: dict[str, float | int | bool] = {
+    meta: Dict[str, Any] = {
         "bbox_area": bbox_area,
         "best_score": float(best_score),
         "accepted": False,
     }
 
-    polygon_norm: np.ndarray | None = None
+    polygon_norm: Optional[np.ndarray] = None
     source = "rejected"
 
     if best_idx >= 0 and best_score > -1e8:
@@ -379,7 +379,7 @@ def refine_bbox_to_polygon_with_sam(
 
 
 def build_detection_polygon(
-    mask: np.ndarray | None,
+    mask: Optional[np.ndarray],
     bbox_xyxy: tuple[float, float, float, float],
     image_shape: tuple[int, int],
     epsilon_ratio: float = 0.01,

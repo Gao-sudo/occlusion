@@ -8,12 +8,12 @@ Endpoint:
 """
 from __future__ import annotations
 
-import base64
 import os
 import sys
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -36,11 +36,12 @@ from occlusion.config import (
 )
 from occlusion.depth_estimator import DepthEstimator
 from occlusion.pipeline import process_image
-from occlusion.utils import load_class_names
+from occlusion.utils import ensure_dir, load_class_names, save_image
 
 app = FastAPI(title="Product Visible Count API", version="1.0.0")
 
 DEFAULT_BEST_WEIGHTS = PROJECT_ROOT / "best.pt"
+API_VIS_ROOT = ensure_dir(PROJECT_ROOT / "outputs" / "api_visualizations")
 
 
 class OcclusionSettings:
@@ -79,7 +80,7 @@ def get_seg_model() -> YOLO:
 
 
 @lru_cache(maxsize=1)
-def get_depth_estimator() -> DepthEstimator | None:
+def get_depth_estimator() -> Optional[DepthEstimator]:
     settings = get_settings()
     if settings.skip_depth:
         return None
@@ -108,7 +109,7 @@ async def handle_unexpected_error(_request: Request, _exc: Exception) -> JSONRes
     )
 
 
-def _decode_image(payload: bytes) -> np.ndarray | None:
+def _decode_image(payload: bytes) -> Optional[np.ndarray]:
     if not payload:
         return None
     arr = np.frombuffer(payload, dtype=np.uint8)
@@ -143,8 +144,12 @@ def _process_image(image_bgr: np.ndarray, include_visualization: bool = False) -
 
     if include_visualization:
         vis_image = out["vis_image"]
-        _, encoded = cv2.imencode(".jpg", vis_image)
-        out["visualization_base64"] = base64.b64encode(encoded.tobytes()).decode("utf-8") if encoded is not None else ""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        vis_dir = ensure_dir(API_VIS_ROOT / timestamp[:8])
+        vis_name = f"vis_{timestamp}.jpg"
+        vis_path = vis_dir / vis_name
+        save_image(vis_path, vis_image)
+        out["visualization_path"] = str(vis_path)
     return out
 
 
@@ -171,7 +176,7 @@ def _compact_result(filename: str | None, out: dict[str, Any], include_instances
         result["instances"] = out["instances"]
         result["filtered_instances"] = out["filtered_instances"]
     if include_visualization:
-        result["visualization_base64"] = out["visualization_base64"]
+        result["visualization_path"] = out.get("visualization_path", "")
     return result
 
 

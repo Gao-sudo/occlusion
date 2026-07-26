@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
-from typing import Literal
+from typing import Dict, Literal, Optional, Union
 
 import cv2
 import numpy as np
@@ -64,8 +64,8 @@ class ClusterInfo:
     countability: Literal["countable", "uncountable"] = "countable"
     countability_reasons: list[str] = field(default_factory=list)
     # dominant SKU class in this cluster (used for occlusion inheritance)
-    dominant_class_id: int | None = None
-    dominant_class_name: str | None = None
+    dominant_class_id: Optional[int] = None
+    dominant_class_name: Optional[str] = None
     # source indices of masks with high confidence (helper for decision engine)
     high_conf_source_indices: set[int] = field(default_factory=set)
 
@@ -74,7 +74,7 @@ def extract_mask_infos(
     masks: np.ndarray,           # NxHxW bool or uint8
     class_ids: np.ndarray,       # N
     class_names: list[str],
-    confidences: np.ndarray | None = None,
+    confidences: Optional[np.ndarray] = None,
 ) -> list[MaskInfo]:
     """Convert raw segmentation outputs to structured MaskInfo list."""
     if confidences is None:
@@ -207,7 +207,7 @@ def _bbox_centers_are_close(a: MaskInfo, b: MaskInfo, y_factor: float = 0.15, x_
     return abs(a.cx - b.cx) <= x_factor * min_w and abs(a.cy - b.cy) <= y_factor * min_h
 
 
-def load_class_priors(path: Path | str | None) -> dict[str, object]:
+def load_class_priors(path: Path | Optional[str]) -> dict[str, object]:
     """Load optional class geometry priors generated from training labels."""
     if path is None:
         return {}
@@ -224,7 +224,7 @@ def load_class_priors(path: Path | str | None) -> dict[str, object]:
 def filter_instances_by_class_priors(
     masks: list[MaskInfo],
     image_shape: tuple[int, int],
-    class_priors: dict[str, object] | None = None,
+    class_priors: Optional[Dict[str, object]] = None,
     min_samples: int = 20,
 ) -> tuple[list[MaskInfo], list[MaskInfo]]:
     """Filter geometry outliers using class-level label statistics.
@@ -360,7 +360,7 @@ def merge_physical_item_fragments(
 
 def filter_counting_instances(
     masks: list[MaskInfo],
-    cluster_by_source_index: dict[int, ClusterInfo] | None = None,
+    cluster_by_source_index: Optional[Dict[int, ClusterInfo]] = None,
     min_context_confidence: float = 0.40,
     same_class_containment_threshold: float = 0.85,
     axis_only_unknown_confidence: float = 0.70,

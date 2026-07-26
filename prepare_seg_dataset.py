@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -101,7 +101,7 @@ def convert_label_lines(
     lines: list[str],
     image_shape: tuple[int, int],
     polygon_mode: str,
-    predictor: Any | None,
+    predictor: Optional[Any],
     sam_options: dict[str, Any],
 ) -> tuple[list[str], list[dict[str, object]]]:
     converted: list[str] = []
@@ -163,7 +163,7 @@ def convert_label_file(
     dst_label: Path,
     image_shape: tuple[int, int],
     polygon_mode: str,
-    predictor: Any | None,
+    predictor: Optional[Any],
     sam_options: dict[str, Any],
     dry_run: bool,
 ) -> tuple[int, int, list[dict[str, object]]]:
@@ -239,10 +239,10 @@ def prepare_split(
     overwrite: bool,
     dry_run: bool,
     strict: bool,
-    max_images: int | None,
-    preview_dir: Path | None,
+    max_images: Optional[int],
+    preview_dir: Optional[Path],
     polygon_mode: str,
-    predictor: Any | None,
+    predictor: Optional[Any],
     sam_options: dict[str, Any],
 ) -> dict[str, int]:
     images_dir = src_root / "images" / split
