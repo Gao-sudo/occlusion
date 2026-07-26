@@ -29,6 +29,8 @@ from occlusion.mask_analyzer import (
     filter_instances_by_class_priors,
     filter_counting_instances,
     filter_top_horizontal_display_masks,
+    is_regular_dense_display_cluster,
+    is_regular_dense_overcount_cluster,
     load_class_priors,
     merge_physical_item_fragments,
     resolve_cluster_dominant_sku,
@@ -88,12 +90,12 @@ def _serialize_instance(
     }
 
 
-def _build_roi_candidate_clusters(
+def _build_local_dense_candidate_clusters(
     mask_infos: list[MaskInfo],
     base_clusters: list[ClusterInfo],
     eps_px: float,
 ) -> list[ClusterInfo]:
-    """Build local dense groups from centroid proximity for ROI refinement."""
+    """Build local dense groups from centroid proximity for region-level reasoning."""
     if len(mask_infos) < 2:
         return []
     if not any(cluster.countability == "uncountable" for cluster in base_clusters):
@@ -366,6 +368,21 @@ def process_image(
 
     clusters = classify_clusters_countability(clusters, depth_map)
     cluster_by_source_index = build_cluster_by_source_index(clusters)
+    local_dense_candidate_clusters = _build_local_dense_candidate_clusters(
+        mask_infos,
+        clusters,
+        eps_px=cluster_eps_px * 3.0,
+    )
+    regular_dense_cluster_ids = [
+        cluster.cluster_id
+        for cluster in local_dense_candidate_clusters
+        if is_regular_dense_display_cluster(cluster)
+    ]
+    regular_dense_overcount_cluster_ids = [
+        cluster.cluster_id
+        for cluster in local_dense_candidate_clusters
+        if is_regular_dense_overcount_cluster(cluster)
+    ]
 
     roi_refine_added = 0
     roi_refine_regions = 0
@@ -374,7 +391,7 @@ def process_image(
         # Dense ROI second pass: use local high-resolution segmentation to recover
         # spatially distinct evidence before applying counting filters.
         initial_mask_count = len(mask_infos)
-        roi_candidate_clusters = _build_roi_candidate_clusters(
+        roi_candidate_clusters = _build_local_dense_candidate_clusters(
             mask_infos,
             clusters,
             eps_px=cluster_eps_px * 3.0,
@@ -490,6 +507,8 @@ def process_image(
     summary["dense_roi_refine_added"] = roi_refine_added
     summary["dense_roi_refine_regions"] = roi_refine_regions
     summary["dense_roi_refine_boxes"] = [list(box) for box in roi_boxes]
+    summary["regular_dense_cluster_ids"] = regular_dense_cluster_ids
+    summary["regular_dense_overcount_cluster_ids"] = regular_dense_overcount_cluster_ids
     summary["class_prior_filtered"] = len(prior_filtered_mask_infos)
     summary["physical_item_fragment_filtered"] = len(fragment_filtered_mask_infos)
     summary["physical_item_groups"] = physical_item_groups

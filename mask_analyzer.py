@@ -25,6 +25,9 @@ from occlusion.config import (
 )
 
 
+DENSE_DISPLAY_CLASS_MIN = 8
+
+
 @dataclass
 class MaskInfo:
     """Info for a single instance mask."""
@@ -828,6 +831,71 @@ def _count_axis_slots(cluster: ClusterInfo) -> int:
             current_start, current_end = start, end
     slots += 1
     return max(1, slots)
+
+
+def _cluster_structure_metrics(cluster: ClusterInfo) -> Dict[str, float]:
+    widths = np.asarray([max(1, m.x2 - m.x1) for m in cluster.masks], dtype=np.float32)
+    heights = np.asarray([max(1, m.y2 - m.y1) for m in cluster.masks], dtype=np.float32)
+    centers_x = np.asarray([m.cx for m in cluster.masks], dtype=np.float32)
+    centers_y = np.asarray([m.cy for m in cluster.masks], dtype=np.float32)
+    nearest = np.full(len(cluster.masks), np.inf, dtype=np.float32)
+    if len(cluster.masks) >= 2:
+        pts = np.stack([centers_x, centers_y], axis=1)
+        distances = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
+        np.fill_diagonal(distances, np.inf)
+        nearest = distances.min(axis=1)
+
+    width_cv = float(widths.std() / max(widths.mean(), 1.0))
+    height_cv = float(heights.std() / max(heights.mean(), 1.0))
+    aspect = heights / np.maximum(widths, 1.0)
+    aspect_cv = float(aspect.std() / max(aspect.mean(), 1.0))
+    axis_slots = _count_axis_slots(cluster)
+    dense_slot_ratio = len(cluster.masks) / max(axis_slots, 1)
+
+    x_sorted = np.sort(centers_x)
+    y_sorted = np.sort(centers_y)
+    x_gaps = np.diff(x_sorted)
+    y_gaps = np.diff(y_sorted)
+    x_gap_cv = float(x_gaps.std() / max(x_gaps.mean(), 1.0)) if len(x_gaps) >= 2 else 0.0
+    y_gap_cv = float(y_gaps.std() / max(y_gaps.mean(), 1.0)) if len(y_gaps) >= 2 else 0.0
+
+    return {
+        "width_cv": width_cv,
+        "height_cv": height_cv,
+        "aspect_cv": aspect_cv,
+        "dense_slot_ratio": float(dense_slot_ratio),
+        "x_gap_cv": x_gap_cv,
+        "y_gap_cv": y_gap_cv,
+        "nearest_med": float(np.median(nearest)) if np.isfinite(nearest).any() else float("inf"),
+        "nearest_p25": float(np.percentile(nearest, 25)) if np.isfinite(nearest).any() else float("inf"),
+    }
+
+
+def is_regular_dense_display_cluster(cluster: ClusterInfo) -> bool:
+    if len(cluster.masks) < DENSE_DISPLAY_CLASS_MIN:
+        return False
+    metrics = _cluster_structure_metrics(cluster)
+    return (
+        cluster.countability == "uncountable"
+        and metrics["width_cv"] <= 0.55
+        and metrics["height_cv"] <= 0.55
+        and metrics["dense_slot_ratio"] >= 1.4
+        and min(metrics["x_gap_cv"], metrics["y_gap_cv"]) <= 0.90
+    )
+
+
+def is_regular_dense_overcount_cluster(cluster: ClusterInfo) -> bool:
+    if len(cluster.masks) < DENSE_DISPLAY_CLASS_MIN:
+        return False
+    metrics = _cluster_structure_metrics(cluster)
+    return (
+        cluster.countability == "uncountable"
+        and metrics["nearest_med"] <= 180.0
+        and metrics["width_cv"] <= 0.45
+        and metrics["height_cv"] <= 0.45
+        and metrics["aspect_cv"] <= 0.45
+        and metrics["dense_slot_ratio"] >= 1.35
+    )
 
 
 def classify_cluster_countability(
